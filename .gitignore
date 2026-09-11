@@ -1,0 +1,7 @@
+/attention
+/attention-mpi
+/attention-mpi-scatter
+*.exe
+*.o
+*.bin
+__pycache__/
