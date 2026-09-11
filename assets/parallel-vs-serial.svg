@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="500" viewBox="0 0 960 500" role="img" aria-labelledby="title desc">
   <title id="title">Parallel speedup versus serial implementation</title>
-  <desc id="desc">Speedup from simple through scale5, reaching 7.49 times on scale5.</desc>
+  <desc id="desc">Parallel speedup across input sizes 256, 512, 1024, 2048, and 4096, reaching 7.49 times at 4096.</desc>
   <rect width="960" height="500" fill="#ffffff"/>
   <style>
     text { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:#24292f; }
@@ -8,10 +8,10 @@
     .axis { stroke:#57606a; stroke-width:1.4; }
     .bar { fill:#0969da; }
   </style>
+
   <text x="480" y="34" font-size="22" font-weight="700" text-anchor="middle">Parallel Speedup vs. Serial Implementation</text>
   <text x="480" y="58" font-size="13" text-anchor="middle">4 nodes × 16 MPI processes/node (64 total)</text>
 
-  <!-- plot area x 90..870 y 80..405, max 8x -->
   <line class="grid" x1="90" y1="405" x2="870" y2="405"/>
   <line class="grid" x1="90" y1="364.4" x2="870" y2="364.4"/>
   <line class="grid" x1="90" y1="323.8" x2="870" y2="323.8"/>
@@ -30,22 +30,28 @@
     <text x="76" y="166">6×</text><text x="76" y="125">7×</text><text x="76" y="85">8×</text>
   </g>
 
-  <!-- 40.625 px per 1x -->
-  <rect class="bar" x="120" y="404.2" width="80" height="0.8" rx="3"/>
-  <rect class="bar" x="245" y="344.1" width="80" height="60.9" rx="3"/>
-  <rect class="bar" x="370" y="315.6" width="80" height="89.4" rx="3"/>
-  <rect class="bar" x="495" y="254.3" width="80" height="150.7" rx="3"/>
-  <rect class="bar" x="620" y="179.1" width="80" height="225.9" rx="3"/>
-  <rect class="bar" x="745" y="100.7" width="80" height="304.3" rx="3"/>
+  <rect class="bar" x="130" y="344.1" width="100" height="60.9" rx="3"/>
+  <rect class="bar" x="285" y="315.6" width="100" height="89.4" rx="3"/>
+  <rect class="bar" x="440" y="254.3" width="100" height="150.7" rx="3"/>
+  <rect class="bar" x="595" y="179.1" width="100" height="225.9" rx="3"/>
+  <rect class="bar" x="750" y="100.7" width="100" height="304.3" rx="3"/>
 
   <g font-size="13" font-weight="700" text-anchor="middle">
-    <text x="160" y="394">0.02×</text><text x="285" y="336">1.50×</text><text x="410" y="307">2.20×</text>
-    <text x="535" y="246">3.71×</text><text x="660" y="171">5.56×</text><text x="785" y="92">7.49×</text>
-  </g>
-  <g font-size="12" text-anchor="middle">
-    <text x="160" y="428">simple</text><text x="285" y="428">scale1</text><text x="410" y="428">scale2</text>
-    <text x="535" y="428">scale3</text><text x="660" y="428">scale4</text><text x="785" y="428">scale5</text>
+    <text x="180" y="336">1.50×</text>
+    <text x="335" y="307">2.20×</text>
+    <text x="490" y="246">3.71×</text>
+    <text x="645" y="171">5.56×</text>
+    <text x="800" y="92">7.49×</text>
   </g>
 
-  <text x="480" y="466" font-size="13" text-anchor="middle">MPI overhead dominates tiny inputs; larger workloads expose useful compute parallelism.</text>
+  <g font-size="12" text-anchor="middle">
+    <text x="180" y="428">256</text>
+    <text x="335" y="428">512</text>
+    <text x="490" y="428">1024</text>
+    <text x="645" y="428">2048</text>
+    <text x="800" y="428">4096</text>
+  </g>
+
+  <text x="490" y="450" font-size="12" text-anchor="middle">Input size</text>
+  <text x="480" y="476" font-size="13" text-anchor="middle">Larger workloads expose more useful computation relative to MPI overhead.</text>
 </svg>
