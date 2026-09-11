@@ -1,39 +1,112 @@
-# Distributed Attention with MPI and AVX-512
+# Distributed Attention Optimization with MPI and AVX-512
 
-A compact C implementation of scaled dot-product attention:
-`softmax(Q K^T / sqrt(dk)) V`, optimized for multi-node CPU execution.
+A multi-node CPU implementation of scaled dot-product attention,
 
-## Highlights
+\[
+\mathrm{Attention}(Q,K,V)=\mathrm{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V,
+\]
 
-- Balanced K/V row partitions across MPI ranks, including uneven partitions.
-- AVX-512 FMA dot products and weighted accumulation, loop unrolling, and masked tails.
-- FP32 intermediate computation and communication with FP64 input/output.
-- Online softmax and global maximum/sum reductions for stable normalization.
-- 512-row query batches, nonblocking broadcasts/reductions, and ping-pong buffers.
-- Adaptive K/V distribution: broadcast below 64 MiB; partitioned scatter otherwise.
+optimized across **distributed communication, SIMD compute, numerical precision, and memory locality**.
 
-## Reported performance
+On the largest benchmark, the optimized implementation reached **3.31x speedup over the basic MPI baseline** and **7.49x over the serial implementation** using **4 nodes / 64 MPI processes**.
 
-Original team experiments used **4 nodes, 16 MPI processes per node (64 total)**.
+## Results at a glance
 
-| Largest test case (`scale5`) | Speedup |
+| Largest test case (`scale5`) | Result |
 | --- | ---: |
-| Versus the basic MPI baseline | **3.31x** |
-| Versus the serial implementation | **7.49x** |
+| Optimized vs. basic MPI baseline | **3.31x** |
+| Optimized vs. serial implementation | **7.49x** |
+| Benchmark configuration | **4 nodes x 16 processes/node** |
+| Total MPI processes | **64** |
 
-These are historical results from Team 12's HW3 report (Q2 and Q6), not new
-measurements of this cleaned version. Original benchmark datasets and the basic
-MPI baseline are not included; the supplied generator is for correctness checks.
-Small inputs can be slower under MPI because communication dominates.
+The key result is not one isolated optimization. AVX-512, mixed precision, communication overlap, batching, and data placement become substantially more effective when combined as one end-to-end execution pipeline.
+
+## Parallel design
+
+```mermaid
+flowchart LR
+    Q["Q: 512-row batches"] -->|MPI_Ibcast| R["All MPI ranks"]
+    KV["K / V"] --> D{"Working-set size"}
+    D -->|"< 64 MiB"| B["MPI_Bcast"]
+    D -->|">= 64 MiB"| S["MPI_Scatterv"]
+    B --> P["Balanced per-rank K/V partition"]
+    S --> P
+    R --> C["Local attention kernel"]
+    P --> C
+    C --> M["Global MAX reduction"]
+    M --> X["Rescale local softmax state"]
+    X --> U["Global SUM reduction"]
+    U --> N["Normalize local contribution"]
+    N -->|MPI_Ireduce| O["Rank 0 output"]
+```
+
+Each rank owns a balanced subset of K/V rows. Attention is computed with an **online softmax**, so the implementation tracks the running maximum, normalization sum, and weighted V contribution without materializing the full `QK^T` matrix.
+
+Global softmax normalization is reconstructed in two stages: a global maximum establishes a common numerical reference, followed by a global sum for the denominator. This keeps the distributed computation numerically stable across ranks.
+
+## Optimization stack
+
+### 1. AVX-512 compute kernels
+
+The local hot path uses AVX-512 FMA for both dot products and weighted accumulation:
+
+- four independent accumulators process 64 FP32 elements per unrolled dot-product iteration;
+- masked loads/stores handle vector tails without a separate padded representation;
+- AVX-512/AVX conversion routines vectorize FP64 -> FP32 input conversion and FP32 -> FP64 output conversion;
+- `_mm_prefetch` brings the next K/V rows toward cache before they are consumed.
+
+This was the most consistently useful standalone optimization, providing about **1.16x-1.40x** speedup on `scale1` through `scale5`.
+
+### 2. Mixed-precision execution
+
+Inputs and final outputs remain FP64, while the distributed attention computation uses FP32 intermediates. This reduces K/V storage and communication volume and doubles the number of FP32 values handled by a 512-bit vector compared with FP64.
+
+Mixed precision alone is not always faster because conversion overhead can offset the savings. Its main benefit appears when combined with AVX-512 and distributed communication optimizations.
+
+### 3. Communication/computation overlap
+
+Queries are processed in **512-row batches** with ping-pong buffers.
+
+While the current batch is being computed, the next Q batch is prefetched with `MPI_Ibcast`. The previous batch's output reduction can also remain in flight through `MPI_Ireduce` while the next batch progresses. This reduces exposed communication latency on sufficiently large workloads.
+
+### 4. Adaptive K/V distribution
+
+K/V rows are divided almost evenly across ranks, including cases where `n` is not divisible by the MPI world size.
+
+The implementation selects the distribution strategy from the K/V working-set size:
+
+- **below 64 MiB:** broadcast K/V, then extract each rank's local slice;
+- **64 MiB and above:** use `MPI_Scatterv` so each rank receives only its partition.
+
+This trades small-message setup overhead against memory and communication volume for larger inputs.
+
+## Performance
+
+### Optimization impact
+
+![Optimization speedup relative to MPI baseline](assets/optimization-speedup.svg)
+
+The standalone results show an important systems-performance lesson: an optimization can be useful even when its isolated benchmark is neutral or slower. Mixed precision and pipeline overlap add overhead by themselves, but they reduce data movement and exposed communication in the complete design. The combined implementation grows from **1.38x at `scale1` to 3.31x at `scale5`** relative to the MPI baseline.
+
+### Parallel vs. serial
+
+![Parallel speedup versus serial implementation](assets/parallel-vs-serial.svg)
+
+MPI is a poor tradeoff for the smallest input because communication dominates useful computation. As the problem grows, the compute-to-communication ratio improves and the distributed implementation reaches **7.49x speedup on `scale5`**.
+
+The benchmark charts reproduce the measurements from the project evaluation on **4 nodes with 16 MPI processes per node**. The original `scale1`-`scale5` benchmark datasets are not included in this portfolio repository; the included generator and smoke tests are intended for correctness and edge-case validation.
 
 ## Build and run
 
-Requires a 64-bit Linux environment, GCC-compatible C compiler, MPI 3+ (such as
-Open MPI), and an **AVX-512F/FMA-capable CPU on every rank**. Python 3 is needed
-only to generate fixtures and run tests. The serial executable does not require
-MPI or AVX-512. There is no SIMD fallback in the optimized executable.
+### Requirements
 
-```sh
+- 64-bit Linux
+- GCC-compatible C compiler
+- MPI 3+ implementation such as Open MPI
+- AVX-512F/FMA-capable CPU on every rank for `attention-mpi`
+- Python 3 for fixture generation and smoke tests
+
+```bash
 make
 python3 tools/generate_case.py sample.bin
 ./attention sample.bin
@@ -41,41 +114,42 @@ mpiexec -n 4 ./attention-mpi sample.bin
 make test
 ```
 
-To build only the serial reference: `make attention`.
-To check it alone: `python3 tests/smoke.py --serial-only`.
-For a cluster, select hosts and process placement using your MPI launcher or
-scheduler. Network transport settings are left to the deployment environment.
+To build only the serial reference:
 
-Each executable reports correctness, maximum absolute error, and elapsed
-microseconds. MPI timing is the maximum across ranks and includes conversion,
-data distribution, computation, and result reductions inside `attention()`;
-it excludes file I/O, validation, and MPI initialization.
+```bash
+make attention
+```
 
-## Source guide
+To test only the serial implementation:
 
-| File | Purpose |
+```bash
+python3 tests/smoke.py --serial-only
+```
+
+For a real cluster, process placement, host selection, and network transport should be configured through the MPI launcher or scheduler.
+
+## Correctness and timing
+
+Both executables validate their output against the expected result stored in the input fixture. The optimized implementation uses the project's original **0.02 absolute-error tolerance** and rejects non-finite results.
+
+MPI timing uses the maximum elapsed time across ranks. The timed `attention()` region includes conversion, K/V distribution, local computation, collective normalization, and output reduction; it excludes file I/O, verification, and MPI initialization.
+
+Because FP32 intermediates are used internally, converting the final output back to FP64 does not recover precision lost during FP32 computation.
+
+## Repository layout
+
+| Path | Purpose |
 | --- | --- |
-| `src/attention.c` | FP64 serial reference |
-| `src/attention-mpi.c` | Distributed FP32 attention with AVX-512 kernels |
-| `src/io.h` | Shared binary input, validation, and error handling |
-| `tools/generate_case.py` | Deterministic fixtures with an independent FP64 reference |
-| `tests/smoke.py` | SIMD tails, empty/uneven partitions, multiple batches, invalid files |
+| `src/attention.c` | FP64 serial reference implementation |
+| `src/attention-mpi.c` | Distributed MPI + AVX-512 optimized implementation |
+| `src/io.h` | Binary input, validation, and shared error handling |
+| `tools/generate_case.py` | Deterministic test-fixture generator with independent FP64 reference |
+| `tests/smoke.py` | Tests SIMD tails, uneven/empty partitions, batching, and invalid inputs |
+| `assets/` | Performance visualizations used in this README |
 
-The binary format is four native-endian 32-bit integers (`m, n, dk, dv`), followed
-by row-major FP64 arrays: Q (`m*dk`), K (`n*dk`), V (`n*dv`), and expected output
-(`m*dv`). Generate and consume files on machines with the same byte order.
-All dimensions must be positive and fit the implementation's integer count
-limits. Input values must be suitable for FP32 computation: extreme finite FP64
-values can overflow when converted or multiplied.
+## Implementation notes
 
-Verification rejects non-finite results and uses the original **0.02 absolute
-error tolerance**. Converting the output back to FP64 does not restore precision
-lost during FP32 computation. Communication overlap depends on MPI progress
-and the target hardware; the max/sum collectives are immediately waited on.
-
-## Provenance
-
-Adapted from Team 12's course project, developed by 朱致伶, 李維哲 (Justin Lee),
-and 江政諺. This portfolio edition retains the computational design, removes
-assignment boilerplate and hard-coded cluster transport settings, shares the
-I/O harness, and fixes validation and process exit handling.
+- The optimized executable intentionally has no non-AVX-512 SIMD fallback.
+- Communication overlap depends on MPI progress behavior and the target cluster/network.
+- The global MAX/SUM normalization collectives are issued with nonblocking MPI calls but are synchronized before their results are consumed.
+- The binary format is native-endian; generate and consume fixtures on machines with the same byte order.
